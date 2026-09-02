@@ -1,0 +1,583 @@
+openapi: 3.0.3
+info:
+  title: Lead Manager API
+  description: |
+    Professional dynamic CSV lead manager.
+    - Any CSV shape → jsonb `data`
+    - Advanced filters with operators
+    - Cursor + page pagination, dynamic sort
+    - Facets & field metadata for filter UI
+    - Export / match without persistent job records
+    - pg-boss (no Redis)
+  version: 2.1.0
+
+servers:
+  - url: http://localhost:4000/api
+    description: Local
+
+tags:
+  - name: health
+  - name: dashboard
+  - name: imports
+  - name: leads
+  - name: exports
+  - name: matching
+
+paths:
+  /health/liveness:
+    get:
+      tags: [health]
+      operationId: healthLiveness
+      responses:
+        '200':
+          description: OK
+
+  /health/readiness:
+    get:
+      tags: [health]
+      operationId: healthReadiness
+      responses:
+        '200':
+          description: Readiness
+
+  /dashboard/stats:
+    get:
+      tags: [dashboard]
+      operationId: getDashboardStats
+      responses:
+        '200':
+          description: Stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardStats'
+
+  /imports/preview:
+    post:
+      tags: [imports]
+      operationId: previewImport
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreviewImportResponse'
+
+  /imports:
+    post:
+      tags: [imports]
+      operationId: createImport
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, mapping]
+              properties:
+                file: { type: string, format: binary }
+                mapping:
+                  type: string
+                  description: JSON map CSV header → identity field
+                duplicateStrategy:
+                  $ref: '#/components/schemas/DuplicateStrategy'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateImportResponse'
+    get:
+      tags: [imports]
+      operationId: listImports
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImportResponse'
+
+  /imports/{id}:
+    get:
+      tags: [imports]
+      operationId: getImport
+      parameters:
+        - $ref: '#/components/parameters/UuidId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportResponse'
+
+  /leads:
+    get:
+      tags: [leads]
+      summary: List leads with advanced dynamic filtering, sort, pagination
+      operationId: listLeads
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: fields
+          in: query
+          schema: { type: string }
+          description: 'JSON simple contains filters {"Company":"Acme"}'
+        - name: filters
+          in: query
+          schema: { type: string }
+          description: |
+            JSON array of advanced rules:
+            [{"field":"Company","op":"eq","value":"Acme"},{"field":"Email","op":"isNotNull"}]
+            Operators: eq, neq, contains, notContains, startsWith, endsWith,
+            isNull, isNotNull, in, notIn, gt, gte, lt, lte
+        - name: hasEmail
+          in: query
+          schema: { type: boolean }
+        - name: hasPhone
+          in: query
+          schema: { type: boolean }
+        - name: hasLinkedIn
+          in: query
+          schema: { type: boolean }
+        - name: createdFrom
+          in: query
+          schema: { type: string, format: date-time }
+        - name: createdTo
+          in: query
+          schema: { type: string, format: date-time }
+        - name: sortBy
+          in: query
+          schema: { type: string }
+        - name: sortOrder
+          in: query
+          schema: { type: string, enum: [asc, desc], default: desc }
+        - name: cursor
+          in: query
+          schema: { type: string }
+          description: Keyset cursor (preferred for large data)
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1 }
+          description: 1-based page (offset mode when no cursor)
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: includeTotal
+          in: query
+          schema: { type: boolean }
+          description: Include total count in cursor mode
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedLeadsResponse'
+
+  /leads/fields:
+    get:
+      tags: [leads]
+      operationId: getLeadFields
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+
+  /leads/fields/meta:
+    get:
+      tags: [leads]
+      summary: Field metadata for filter UI
+      operationId: getLeadFieldMeta
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FieldMeta'
+
+  /leads/fields/facets:
+    get:
+      tags: [leads]
+      summary: Facet values for one field
+      operationId: getLeadFieldFacets
+      parameters:
+        - name: field
+          in: query
+          required: true
+          schema: { type: string }
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FacetValue'
+
+  /leads/count:
+    get:
+      tags: [leads]
+      operationId: countLeads
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: fields
+          in: query
+          schema: { type: string }
+        - name: filters
+          in: query
+          schema: { type: string }
+        - name: hasEmail
+          in: query
+          schema: { type: boolean }
+        - name: hasPhone
+          in: query
+          schema: { type: boolean }
+        - name: hasLinkedIn
+          in: query
+          schema: { type: boolean }
+        - name: createdFrom
+          in: query
+          schema: { type: string, format: date-time }
+        - name: createdTo
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: integer }
+
+  /leads/{id}:
+    get:
+      tags: [leads]
+      operationId: getLead
+      parameters:
+        - $ref: '#/components/parameters/UuidId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeadResponse'
+    patch:
+      tags: [leads]
+      operationId: updateLead
+      parameters:
+        - $ref: '#/components/parameters/UuidId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeadResponse'
+    delete:
+      tags: [leads]
+      operationId: deleteLead
+      parameters:
+        - $ref: '#/components/parameters/UuidId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+                  id: { type: string }
+
+  /leads/bulk-delete:
+    post:
+      tags: [leads]
+      summary: Bulk delete by filter (requires at least one filter)
+      operationId: bulkDeleteLeads
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkDeleteRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: integer }
+
+  /exports:
+    post:
+      tags: [exports]
+      operationId: createExport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateExportRequest'
+      responses:
+        '200':
+          description: CSV
+          headers:
+            X-Row-Count:
+              schema: { type: integer }
+            Content-Disposition:
+              schema: { type: string }
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+
+  /matching:
+    post:
+      tags: [matching]
+      operationId: matchAndEnrich
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, csvMatchField, dbMatchField]
+              properties:
+                file: { type: string, format: binary }
+                csvMatchField: { type: string }
+                dbMatchField:
+                  type: string
+                  enum: [email, phone, linkedin, website]
+      responses:
+        '200':
+          description: Enriched CSV
+          headers:
+            X-Total-Rows: { schema: { type: integer } }
+            X-Matched-Rows: { schema: { type: integer } }
+            X-Unmatched-Rows: { schema: { type: integer } }
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+
+components:
+  parameters:
+    UuidId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  schemas:
+    DuplicateStrategy:
+      type: string
+      enum:
+        - email
+        - phone
+        - linkedin
+        - email_or_phone
+        - email_or_linkedin
+        - phone_or_linkedin
+        - email_or_phone_or_linkedin
+
+    JobStatus:
+      type: string
+      enum: [PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED]
+
+    FilterOperator:
+      type: string
+      enum:
+        - eq
+        - neq
+        - contains
+        - notContains
+        - startsWith
+        - endsWith
+        - isNull
+        - isNotNull
+        - in
+        - notIn
+        - gt
+        - gte
+        - lt
+        - lte
+
+    AdvancedFilter:
+      type: object
+      required: [field, op]
+      properties:
+        field: { type: string }
+        op: { $ref: '#/components/schemas/FilterOperator' }
+        value:
+          oneOf:
+            - type: string
+            - type: array
+              items: { type: string }
+            - type: number
+            - type: boolean
+            - type: 'null'
+
+    DashboardStats:
+      type: object
+      properties:
+        leads:
+          type: object
+          properties:
+            total: { type: integer }
+        imports:
+          type: object
+          properties:
+            total: { type: integer }
+            completed: { type: integer }
+            processing: { type: integer }
+            failed: { type: integer }
+
+    PreviewImportResponse:
+      type: object
+      properties:
+        headers:
+          type: array
+          items: { type: string }
+        sampleRows:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        estimatedRows: { type: integer }
+
+    CreateImportResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/JobStatus' }
+        message: { type: string }
+
+    ImportResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        originalFilename: { type: string }
+        status: { $ref: '#/components/schemas/JobStatus' }
+        totalRows: { type: integer }
+        processedRows: { type: integer }
+        insertedRows: { type: integer }
+        duplicateRows: { type: integer }
+        invalidRows: { type: integer }
+        errorMessage: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+
+    LeadResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        data:
+          type: object
+          additionalProperties:
+            type: string
+            nullable: true
+        emailNormalized: { type: string, nullable: true }
+        phoneNormalized: { type: string, nullable: true }
+        linkedinNormalized: { type: string, nullable: true }
+        websiteNormalized: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    PaginatedLeadsResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/LeadResponse'
+        nextCursor: { type: string, nullable: true }
+        hasNextPage: { type: boolean }
+        page: { type: integer }
+        totalPages: { type: integer }
+        total: { type: integer }
+
+    FieldMeta:
+      type: object
+      properties:
+        name: { type: string }
+        nonNullCount: { type: integer }
+        sampleValues:
+          type: array
+          items: { type: string }
+
+    FacetValue:
+      type: object
+      properties:
+        value: { type: string }
+        count: { type: integer }
+
+    BulkDeleteRequest:
+      type: object
+      properties:
+        search: { type: string }
+        fields:
+          type: object
+          additionalProperties: { type: string }
+        filters:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdvancedFilter'
+        hasEmail: { type: boolean }
+        hasPhone: { type: boolean }
+        hasLinkedIn: { type: boolean }
+        createdFrom: { type: string, format: date-time }
+        createdTo: { type: string, format: date-time }
+
+    CreateExportRequest:
+      type: object
+      properties:
+        search: { type: string }
+        fields:
+          type: object
+          additionalProperties: { type: string }
+        filters:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdvancedFilter'
+        hasEmail: { type: boolean }
+        hasPhone: { type: boolean }
+        hasLinkedIn: { type: boolean }
+        createdFrom: { type: string, format: date-time }
+        createdTo: { type: string, format: date-time }
+        limit: { type: integer, maximum: 100000, default: 10000 }
+        columns:
+          type: array
+          items: { type: string }
+        sortBy: { type: string }
+        sortOrder: { type: string, enum: [asc, desc] }
